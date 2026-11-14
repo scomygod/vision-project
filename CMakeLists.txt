@@ -2,7 +2,7 @@ cmake_minimum_required(VERSION 3.16)
 
 project(vision_project LANGUAGES CXX)
 
-find_package(OpenCV REQUIRED COMPONENTS core imgcodecs highgui)
+find_package(OpenCV REQUIRED COMPONENTS core imgcodecs highgui videoio imgproc)
 
 add_executable(vision_project src/main.cpp)
 
