@@ -13,7 +13,7 @@
 
 - El alcance activo es únicamente la Parte I del proyecto académico. La Parte II se abordará en otra fecha.
 - La propuesta actual es Grabado de curvas de nivel, pendiente de concretar el diseño matemático propio y confirmar que no repite el pipeline artístico de otro grupo. Sustituye la propuesta anterior de ASCII. No añadir segmentación de personas ni reconocimiento si no son necesarios para la Parte I.
-- Adrian puede avanzar en cualquier funcionalidad de la Parte I. El reparto con John no bloquea tareas mientras John no esté trabajando en ellas. Revisar cambios existentes antes de integrar trabajo concurrente.
+- Adrian mantiene escritorio y John inicia Android desde el commit de traspaso. Ambos deben comprender el procesamiento compartido. Acordar cambios en grabado.cpp y grabado.hpp para no romper la otra plataforma y revisar cambios existentes antes de integrar trabajo concurrente.
 - Trabajar por hitos funcionales completos y de tamaño significativo. Explicar cada hito por bloques sin convertir cada instrucción en una sesión independiente.
 - En macOS activar exclusivamente `conda activate vision-project`. OpenCV aislado está en `opt/opencv-opencl-5.0.0` dentro del entorno. Obtener las rutas del entorno, sin fijar rutas personales en CMake.
 
@@ -48,7 +48,7 @@
 ## Comprensión y sustentación individual
 
 - La nota práctica es sobre 15 puntos y se multiplica por un factor individual entre 0 y 1 según la defensa. El informe y vídeo se evalúan sobre 5 puntos. Entender la lógica matemática y algorítmica es un criterio de cierre de cada avance.
-- Usar primero las estructuras, funciones y convenciones de los ejemplos del profesor. Revisar el material disponible antes de afirmar que una función se vio en clase. Los ejemplos actualmente localizados son de la Unidad 1 y no prueban por sí solos qué se vio en las demás unidades.
+- Usar primero las estructuras, funciones y convenciones de los ejemplos del profesor. Revisar el material disponible antes de afirmar que una función se vio en clase. Revisar los ejemplos disponibles de las Unidades 1 y 2 y el tutorial OpenCL/VTK; no inferir cobertura de clase solo a partir de una lista de funciones.
 - Si un requisito necesita una función no presente en los ejemplos, introducir solo lo necesario y explicar su lógica, entradas, salidas, tipos, parámetros y relación con lo conocido. No sustituir OpenCL, VTK o JNI por tecnologías diferentes para evitar aprenderlos. No copiar errores de los ejemplos.
 - Mantener un nivel coherente de complejidad en todo el proyecto. Evitar funciones largas con responsabilidades mezcladas, validaciones ajenas al uso real, infraestructura de tests y abstracciones que el estudiante no pueda explicar. Mantener las comprobaciones esenciales de fallo.
 - Al entregar un avance, recorrer un fotograma de entrada a salida, explicar fórmulas y cambios de parámetros con valores concretos, señalar qué cambia al quitar una operación y proponer unas pocas preguntas o modificaciones para comprobar comprensión. Hacerlo en el chat, sin insertar cuestionarios ni mensajes pedagógicos en la aplicación.

@@ -1,2 +1,5 @@
 /build/
 .DS_Store
+/mediciones.csv
+/mediciones-v2.csv
+/build-linux/

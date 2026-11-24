@@ -3,7 +3,6 @@
 #include <sstream>
 #include <chrono>
 #include <iomanip>
-#include <algorithm>
 #include <opencv2/imgcodecs.hpp>
 #include <opencv2/highgui.hpp>
 #include <opencv2/videoio.hpp>
@@ -11,90 +10,16 @@
 #include <opencv2/core/ocl.hpp>
 #include <opencv2/viz.hpp>
 #include "grabado.hpp"
+#include "medicion.hpp"
+#include "panel.hpp"
 
 using namespace std;
 using namespace cv;
-
-struct EstadoPanel {
-    int etapa = 0;
-    bool salir = false;
-};
-
-const Rect botonesEtapa[] = {
-    Rect(8, 370, 170, 38), Rect(188, 370, 140, 38), Rect(338, 370, 130, 38)
-};
-const Rect botonSalir(478, 370, 154, 38);
 
 #ifdef __APPLE__
 void observarEscape(bool* salir);
 void dejarDeObservarEscape();
 #endif
-
-void ratonPanel(int evento, int x, int y, int, void* datos){
-    if(evento != EVENT_LBUTTONDOWN){
-        return;
-    }
-    EstadoPanel* estado = static_cast<EstadoPanel*>(datos);
-    for(int i = 0; i < 3; i++){
-        if(botonesEtapa[i].contains(Point(x, y))){
-            estado->etapa = i;
-            return;
-        }
-    }
-    if(botonSalir.contains(Point(x, y))){
-        estado->salir = true;
-    }
-}
-
-void escribir(Mat& imagen, const string& texto, Point posicion, double escala){
-    putText(imagen, texto, posicion, FONT_HERSHEY_SIMPLEX,
-            escala, Scalar(240, 240, 240), 1, LINE_AA);
-}
-
-void miniatura(const Mat& imagen, Mat& panel, Rect zona){
-    Mat color, reducida;
-    if(imagen.channels() == 1){
-        cvtColor(imagen, color, COLOR_GRAY2BGR);
-    }else{
-        color = imagen;
-    }
-    double escala = min(double(zona.width) / color.cols,
-                        double(zona.height) / color.rows);
-    resize(color, reducida, Size(), escala, escala, INTER_AREA);
-    int x = zona.x + (zona.width - reducida.cols) / 2;
-    int y = zona.y + (zona.height - reducida.rows) / 2;
-    reducida.copyTo(panel(Rect(x, y, reducida.cols, reducida.rows)));
-}
-
-// Lienzo de inspección adaptado de Unidad 2, ejemplos 5 y 6.
-Mat crearPanel(const Mat& original, const Mat& cpu, const Mat& etapa,
-               int etapaActual, const string& textoCPU,
-               const string& textoTAPI, const string& transferencias,
-               const string& parametros){
-    Mat panel(420, 640, CV_8UC3, Scalar(28, 28, 28));
-    escribir(panel, textoCPU, Point(12, 40), 1.0);
-    escribir(panel, textoTAPI, Point(12, 82), 1.0);
-    escribir(panel, transferencias, Point(12, 119), 0.65);
-    escribir(panel, parametros, Point(12, 152), 0.65);
-    escribir(panel, "Original", Point(12, 195), 0.65);
-    escribir(panel, "CPU", Point(224, 195), 0.65);
-    const string nombres[] = {"Luminosidad", "Bandas", "Sobel"};
-    escribir(panel, nombres[etapaActual], Point(436, 195), 0.6);
-    miniatura(original, panel, Rect(8, 210, 200, 150));
-    miniatura(cpu, panel, Rect(220, 210, 200, 150));
-    miniatura(etapa, panel, Rect(432, 210, 200, 150));
-    for(int i = 0; i < 3; i++){
-        Scalar color(65, 65, 65);
-        if(i == etapaActual){
-            color = Scalar(150, 95, 35);
-        }
-        rectangle(panel, botonesEtapa[i], color, FILLED);
-        escribir(panel, nombres[i], Point(botonesEtapa[i].x + 12, 396), 0.7);
-    }
-    rectangle(panel, botonSalir, Scalar(45, 45, 150), FILLED);
-    escribir(panel, "Salir", Point(botonSalir.x + 12, 396), 0.7);
-    return panel;
-}
 
 // VTK entrega las teclas a esta función cuando su ventana tiene el foco.
 void tecladoVTK(const viz::KeyboardEvent& evento, void* datos){
@@ -161,16 +86,37 @@ int mostrarCamara(int indice){
     int tamanoAnterior = -1, sigmaAnterior = -1;
     Size resolucionAnterior;
     int calentamiento = 10;
+    int modoAnterior = -1, etapaAnterior = -1;
+    bool cargaAnterior = false, grabando = false;
+    ofstream archivoCSV;
+    Tiempos suma;
+    Resumen resumen;
+    int fotogramas = 0;
+    auto inicioVentana = chrono::steady_clock::now();
+    double cpuInicioVentana = -1;
+    string mensajeCSV;
+    int codigoSalida = 0;
 
     while(true){
+        if(estado.cargaAlta != cargaAnterior){
+            int ancho = estado.cargaAlta ? 1920 : 640;
+            int alto = estado.cargaAlta ? 1080 : 480;
+            video.set(CAP_PROP_FRAME_WIDTH, ancho);
+            video.set(CAP_PROP_FRAME_HEIGHT, alto);
+            cargaAnterior = estado.cargaAlta;
+            calentamiento = 10;
+        }
+        bool reiniciarVentana = false;
+        Tiempos muestra;
+        auto capturaInicio = chrono::steady_clock::now();
         if(!video.read(frame) || frame.empty()){
             cerr << "Error. No se pudo leer el fotograma." << endl;
-#ifdef __APPLE__
-            dejarDeObservarEscape();
-#endif
-            return 3;
+            codigoSalida = 3;
+            break;
         }
 
+        auto capturaFin = chrono::steady_clock::now();
+        muestra.captura = chrono::duration<double, milli>(capturaFin - capturaInicio).count();
         escena.spinOnce(1, false);
         if(estado.salir || escena.wasStopped()){
             break;
@@ -181,42 +127,73 @@ int mostrarCamara(int indice){
         int tamano = 2 * getTrackbarPos("Kernel", "Panel") + 1;
         int posicionSigma = getTrackbarPos("Sigma", "Panel");
         double sigma = 0.5 + 0.25 * posicionSigma;
-        int etapaActual = estado.etapa;
+        // Mantener modo, parámetros y etiquetas coherentes durante esta vuelta.
+        EstadoPanel seleccion = estado;
+        int etapaActual = seleccion.etapa;
+        int modoActual = seleccion.modo;
+        if(estado.grabar != grabando){
+            if(estado.grabar){
+                mensajeCSV.clear();
+                if(!abrirCSV(archivoCSV)){
+                    cerr << "Error. No se pudo abrir " << rutaCSV << endl;
+                    mensajeCSV = "Error al abrir CSV";
+                    archivoCSV.close();
+                    archivoCSV.clear();
+                    estado.grabar = false;
+                }
+            }else{
+                archivoCSV.close();
+            }
+            reiniciarVentana = true;
+            grabando = estado.grabar;
+            seleccion.grabar = grabando;
+        }
 
         if(niveles != nivelesAnterior || grosor != grosorAnterior ||
            tamano != tamanoAnterior || posicionSigma != sigmaAnterior ||
-           frame.size() != resolucionAnterior){
+           frame.size() != resolucionAnterior || modoActual != modoAnterior){
             calentamiento = 10;
             nivelesAnterior = niveles;
             grosorAnterior = grosor;
             tamanoAnterior = tamano;
             sigmaAnterior = posicionSigma;
             resolucionAnterior = frame.size();
+            modoAnterior = modoActual;
         }
 
-        ocl::finish();
-        auto inicio = chrono::steady_clock::now();
-        frame.copyTo(entradaU);
-        ocl::finish();
-        auto subidaFin = chrono::steady_clock::now();
+        if(reiniciarVentana || calentamiento > 0 || etapaActual != etapaAnterior){
+            reiniciarVentana = true;
+            suma = Tiempos();
+            resumen = Resumen();
+            fotogramas = 0;
+            etapaAnterior = etapaActual;
+        }
 
-        grabarCPU(frame, resultadoCPU, luzCPU, bandasCPU, bordesCPU,
-                  niveles, grosor, tamano, sigma);
-        auto cpuFin = chrono::steady_clock::now();
+        if(modoActual != 0){
+            ocl::finish();
+            auto inicio = chrono::steady_clock::now();
+            frame.copyTo(entradaU);
+            ocl::finish();
+            muestra.subida = chrono::duration<double, milli>(chrono::steady_clock::now() - inicio).count();
+        }
+        if(modoActual != 1){
+            auto inicio = chrono::steady_clock::now();
+            grabarCPU(frame, resultadoCPU, luzCPU, bandasCPU, bordesCPU,
+                      niveles, grosor, tamano, sigma);
+            muestra.cpu = chrono::duration<double, milli>(chrono::steady_clock::now() - inicio).count();
+        }
+        if(modoActual != 0){
+            auto inicio = chrono::steady_clock::now();
+            grabarTAPI(entradaU, resultadoU, luzU, bandasU, bordesU,
+                       niveles, grosor, tamano, sigma);
+            ocl::finish();
+            muestra.tapi = chrono::duration<double, milli>(chrono::steady_clock::now() - inicio).count();
 
-        grabarTAPI(entradaU, resultadoU, luzU, bandasU, bordesU,
-                   niveles, grosor, tamano, sigma);
-        ocl::finish();
-        auto tapiFin = chrono::steady_clock::now();
-
-        resultadoU.copyTo(resultadoTAPI);
-        ocl::finish();
-        auto bajadaFin = chrono::steady_clock::now();
-
-        double subida = chrono::duration<double, milli>(subidaFin - inicio).count();
-        double cpu = chrono::duration<double, milli>(cpuFin - subidaFin).count();
-        double tapi = chrono::duration<double, milli>(tapiFin - cpuFin).count();
-        double bajada = chrono::duration<double, milli>(bajadaFin - tapiFin).count();
+            inicio = chrono::steady_clock::now();
+            resultadoU.copyTo(resultadoTAPI);
+            ocl::finish();
+            muestra.bajada = chrono::duration<double, milli>(chrono::steady_clock::now() - inicio).count();
+        }
 
         // Atender interacción fuera de los intervalos de CPU y T-API.
         escena.spinOnce(1, false);
@@ -224,47 +201,87 @@ int mostrarCamara(int indice){
             break;
         }
 
-        // La inspección de etapas y los textos quedan fuera de los intervalos.
-        if(etapaActual == 0){
-            luzU.convertTo(etapaU, CV_8U);
-        }else if(etapaActual == 1){
-            bandasU.convertTo(etapaU, CV_8U, 255.0 / (niveles - 1));
-        }else{
-            bordesU.copyTo(etapaU);
-        }
-        etapaU.copyTo(etapa);
-
-        stringstream textoCPU, textoTAPI, transferencias, parametros;
-        textoCPU << fixed << setprecision(2);
-        textoCPU << "CPU " << frame.cols << "x" << frame.rows << ": ";
-        textoTAPI << fixed << setprecision(2);
-        transferencias << fixed << setprecision(2);
-        if(calentamiento > 0){
-            textoCPU << "calentando";
-            textoTAPI << "T-API: calentando";
-            transferencias << "Transferencias: calentando";
-            calentamiento--;
-        }else{
-            textoCPU << cpu << " ms";
-            textoTAPI << "T-API";
-            if(opencl){
-                textoTAPI << "/OpenCL";
+        // Inspección, dibujo y renderizado fuera de los tiempos de filtrado.
+        auto presentacionInicio = chrono::steady_clock::now();
+        if(modoActual == 0){
+            if(etapaActual == 0){
+                luzCPU.convertTo(etapa, CV_8U);
+            }else if(etapaActual == 1){
+                bandasCPU.convertTo(etapa, CV_8U, 255.0 / (niveles - 1));
             }else{
-                textoTAPI << "/CPU";
+                etapa = bordesCPU;
             }
-            textoTAPI << ": " << tapi << " ms";
-            transferencias << "H->U: " << subida << " ms  U->H: " << bajada << " ms";
+        }else{
+            if(etapaActual == 0){
+                luzU.convertTo(etapaU, CV_8U);
+            }else if(etapaActual == 1){
+                bandasU.convertTo(etapaU, CV_8U, 255.0 / (niveles - 1));
+            }else{
+                bordesU.copyTo(etapaU);
+            }
+            etapaU.copyTo(etapa);
+            ocl::finish();
         }
-        parametros << "Valores: N=" << niveles << " radio=" << grosor
-                   << " k=" << tamano << "x" << tamano << " sigma=" << sigma;
-        Mat panel = crearPanel(frame, resultadoCPU, etapa, etapaActual,
-                               textoCPU.str(), textoTAPI.str(),
-                               transferencias.str(), parametros.str());
+
+        stringstream textoCPU, textoTAPI, transferencias, capturaPresentacion, fpsRAM, parametros;
+        textoCPU << fixed << setprecision(2) << "CPU: ";
+        textoTAPI << fixed << setprecision(2) << (opencl ? "T-API/OpenCL: " : "T-API/CPU: ");
+        transferencias << fixed << setprecision(2);
+        capturaPresentacion << fixed << setprecision(2);
+        fpsRAM << fixed << setprecision(1);
+        textoCPU << (modoActual == 1 ? "inactivo" : "");
+        textoTAPI << (modoActual == 0 ? "inactivo" : "");
+        string estadoMedicion = calentamiento > 0 ? "Calentando (10 cuadros excluidos)" : "Midiendo (media >= 1 s)";
+        if(resumen.fotogramas > 0){
+            if(modoActual != 1){
+                textoCPU << resumen.media.cpu << " ms";
+            }
+            if(modoActual != 0){
+                textoTAPI << resumen.media.tapi << " ms";
+                transferencias << "Mat->U: " << resumen.media.subida
+                               << " ms  U->Mat: " << resumen.media.bajada << " ms";
+            }else{
+                transferencias << "Transferencias: no se ejecutan";
+            }
+            capturaPresentacion << "Captura: " << resumen.media.captura
+                                << " ms  Present.: " << resumen.media.presentacion << " ms";
+            fpsRAM << "FPS app" << (modoActual == 2 ? " conjunto" : "") << ": " << resumen.fps << "  RSS: ";
+            if(resumen.ramMiB >= 0){
+                fpsRAM << resumen.ramMiB << " MiB";
+            }else{
+                fpsRAM << "N/D";
+            }
+            fpsRAM << "  CPU proc.: ";
+            if(resumen.cpuPorcentaje >= 0){
+                fpsRAM << resumen.cpuPorcentaje << "%";
+            }else{
+                fpsRAM << "N/D";
+            }
+        }else{
+            if(modoActual != 1){
+                textoCPU << "esperando media";
+            }
+            if(modoActual != 0){
+                textoTAPI << "esperando media";
+            }
+        }
+        parametros << "Valores: " << frame.cols << "x" << frame.rows << " N=" << niveles
+                   << " r=" << grosor << " k=" << tamano << " sigma=" << sigma;
+        if(grabando){
+            estadoMedicion += string(" | CSV: ") + rutaCSV;
+        }else if(!mensajeCSV.empty()){
+            estadoMedicion = mensajeCSV;
+        }
+        const Mat& resultado = modoActual == 0 ? resultadoCPU : resultadoTAPI;
+        const Mat& miniaturaResultado = modoActual == 2 ? resultadoCPU : resultado;
+        Mat panel = crearPanel(frame, miniaturaResultado, etapa, seleccion,
+                               textoCPU.str(), textoTAPI.str(), transferencias.str(),
+                               capturaPresentacion.str(), fpsRAM.str(), parametros.str(), estadoMedicion);
         imshow("Panel", panel);
 
         if(frame.size() != resolucionPlano){
             double alto = 2.0 * frame.rows / frame.cols;
-            plano = viz::WImage3D(resultadoTAPI, Size2d(2, alto));
+            plano = viz::WImage3D(resultado, Size2d(2, alto));
             escena.showWidget("Grabado", plano,
                               Affine3d(Vec3d(0, -0.04, 0), Vec3d(0, 0, 0)));
             escena.setViewerPose(viz::makeCameraPose(
@@ -273,11 +290,41 @@ int mostrarCamara(int indice){
             escena.resetCamera();
             resolucionPlano = frame.size();
         }else{
-            plano.setImage(resultadoTAPI);
+            plano.setImage(resultado);
         }
         escena.spinOnce(1, true);
 
         int tecla = waitKey(1);
+        auto finVuelta = chrono::steady_clock::now();
+        muestra.presentacion = chrono::duration<double, milli>(finVuelta - presentacionInicio).count();
+        if(calentamiento > 0 || reiniciarVentana){
+            if(calentamiento > 0){
+                calentamiento--;
+            }
+            inicioVentana = finVuelta;
+            if(calentamiento == 0){
+                cpuInicioVentana = segundosCPUProceso();
+            }
+        }else{
+            acumular(suma, muestra);
+            fotogramas++;
+            double segundos = chrono::duration<double>(finVuelta - inicioVentana).count();
+            if(segundos >= 1.0){
+                double cpuFinVentana = segundosCPUProceso();
+                resumen = resumir(suma, fotogramas, segundos);
+                resumen.cpuPorcentaje = porcentajeCPU(cpuInicioVentana, cpuFinVentana, segundos);
+                if(grabando && !guardarCSV(archivoCSV, resumen, modoActual, indice,
+                    frame.cols, frame.rows, niveles, grosor, tamano, sigma, etapaActual, opencl)){
+                    cerr << "Error. No se pudo escribir " << rutaCSV << endl;
+                    mensajeCSV = "Error al escribir CSV";
+                    estado.grabar = false;
+                }
+                suma = Tiempos();
+                fotogramas = 0;
+                inicioVentana = finVuelta;
+                cpuInicioVentana = cpuFinVentana;
+            }
+        }
         if(tecla == 27 || estado.salir || escena.wasStopped()){
             break;
         }
@@ -289,7 +336,7 @@ int mostrarCamara(int indice){
     video.release();
     escena.close();
     destroyAllWindows();
-    return 0;
+    return codigoSalida;
 }
 
 int main(int argc, char *argv[]){
